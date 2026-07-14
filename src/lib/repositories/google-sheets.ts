@@ -1,10 +1,8 @@
 /**
  * Google Sheets Repository - Public Sheets (No API Key)
  * 
- * Reads via public CSV export URLs.
+ * Reads via public gviz/tq CSV export (by sheet name).
  * Writes via Google Apps Script Web App.
- * 
- * Architecture: Google Sheets (public) -> Repository -> Services -> API Routes -> Components
  */
 
 import { SheetRow, ApiResponse } from "@/lib/types";
@@ -20,19 +18,17 @@ function parseCSV(csvText: string): SheetRow[] {
   const lines = csvText.trim().split("\n");
   if (lines.length === 0) return [];
 
-  // Parse headers (first row)
   const headers = parseCSVLine(lines[0]);
 
-  // Parse data rows
   const records: SheetRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const values = parseCSVLine(lines[i]);
     const record: SheetRow = {};
     headers.forEach((header, index) => {
-      // Trim whitespace and remove surrounding quotes
       let val = values[index] ?? "";
       val = val.trim();
-      if (val.startsWith('"') && val.endsWith('"')) {
+      // Remove surrounding quotes if present
+      if (val.startsWith('"') && val.endsWith('"') && val.length > 1) {
         val = val.slice(1, -1);
       }
       record[header] = val;
@@ -55,50 +51,41 @@ function parseCSVLine(line: string): string[] {
     if (char === '"') {
       if (inQuotes && nextChar === '"') {
         current += '"';
-        i++; // Skip escaped quote
+        i++;
       } else {
         inQuotes = !inQuotes;
       }
     } else if (char === ',' && !inQuotes) {
-      result.push(current.trim());
+      result.push(current);
       current = "";
     } else {
       current += char;
     }
   }
 
-  result.push(current.trim());
+  result.push(current);
   return result;
 }
 
 // ============================================================
-// Public CSV Export URLs
+// Public gviz/tq CSV Export (reads by sheet name)
 // ============================================================
 
-function getCSVExportUrl(spreadsheetId: string, sheetGid: number): string {
-  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${sheetGid}`;
+function getGvizUrl(spreadsheetId: string, sheetName: string): string {
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
 }
 
-// Sheet name to GID mapping for the master workbook
+// Fallback: standard export URL (by gid)
+function getExportUrl(spreadsheetId: string, gid: number): string {
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
+}
+
+// Sheet name to GID mapping (fallback)
 const SHEET_GID_MAP: Record<string, number> = {
-  Enterprise: 0,
-  Country: 1,
-  City: 2,
-  Plant: 3,
-  Department: 4,
-  ProductionLine: 5,
-  Machine: 6,
-  Product_SKU: 7,
-  User: 8,
-  Problem: 9,
-  Role: 10,
-  Shift: 11,
-  KPI: 12,
-  AlertThreshold: 13,
-  ProblemCategory: 14,
-  Severity: 15,
-  Status: 16,
-  Calendar: 17,
+  Enterprise: 0, Country: 1, City: 2, Plant: 3, Department: 4,
+  ProductionLine: 5, Machine: 6, Product_SKU: 7, User: 8, Problem: 9,
+  Role: 10, Shift: 11, KPI: 12, AlertThreshold: 13, ProblemCategory: 14,
+  Severity: 15, Status: 16, Calendar: 17,
 };
 
 // ============================================================
@@ -107,7 +94,7 @@ const SHEET_GID_MAP: Record<string, number> = {
 
 export class GoogleSheetsRepository {
   /**
-   * Read all data from a public sheet via CSV export
+   * Read all data from a public sheet via gviz/tq API
    */
   async readSheet(sheetName: string): Promise<ApiResponse<SheetRow[]>> {
     try {
@@ -115,37 +102,59 @@ export class GoogleSheetsRepository {
         return { success: false, error: "Master spreadsheet ID not configured" };
       }
 
-      const gid = SHEET_GID_MAP[sheetName];
-      if (gid === undefined) {
-        return { success: false, error: `Unknown sheet: ${sheetName}` };
-      }
+      // Try gviz/tq first (reads by sheet name)
+      const gvizUrl = getGvizUrl(MASTER_SPREADSHEET_ID, sheetName);
+      console.log(`[Sheets] Trying gviz URL: ${gvizUrl}`);
 
-      const url = getCSVExportUrl(MASTER_SPREADSHEET_ID, gid);
-
-      const response = await fetch(url, {
+      let response = await fetch(gvizUrl, {
         method: "GET",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
         cache: "no-store",
       });
 
+      // If gviz fails, try standard export with GID
       if (!response.ok) {
+        const gid = SHEET_GID_MAP[sheetName];
+        if (gid !== undefined) {
+          const exportUrl = getExportUrl(MASTER_SPREADSHEET_ID, gid);
+          console.log(`[Sheets] gviz failed, trying export URL: ${exportUrl}`);
+          response = await fetch(exportUrl, {
+            method: "GET",
+            cache: "no-store",
+          });
+        }
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        console.error(`[Sheets] HTTP ${response.status}: ${errorText}`);
         return {
           success: false,
-          error: `Failed to fetch sheet: ${response.status} ${response.statusText}`,
+          error: `Failed to fetch sheet '${sheetName}': HTTP ${response.status}`,
         };
       }
 
       const csvText = await response.text();
+      console.log(`[Sheets] Raw CSV length: ${csvText.length} chars`);
+      console.log(`[Sheets] Raw CSV first 200 chars: ${csvText.substring(0, 200)}`);
+
+      if (!csvText || csvText.trim().length === 0) {
+        return { success: true, data: [] };
+      }
+
       const records = parseCSV(csvText);
+      console.log(`[Sheets] Parsed ${records.length} records from '${sheetName}'`);
+
+      if (records.length > 0) {
+        console.log(`[Sheets] First record keys:`, Object.keys(records[0]));
+        console.log(`[Sheets] First record sample:`, records[0]);
+      }
 
       return { success: true, data: records };
     } catch (error) {
-      console.error(`Error reading sheet ${sheetName}:`, error);
+      console.error(`[Sheets] Error reading sheet ${sheetName}:`, error);
       return {
         success: false,
-        error: `Failed to read sheet: ${sheetName}`,
+        error: `Failed to read sheet '${sheetName}': ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }
@@ -165,10 +174,7 @@ export class GoogleSheetsRepository {
       const response = await fetch(APPS_SCRIPT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          values,
-        }),
+        body: JSON.stringify({ sheetName, values }),
       });
 
       const result = await response.json();
@@ -179,7 +185,7 @@ export class GoogleSheetsRepository {
 
       return { success: true, message: "Row appended successfully" };
     } catch (error) {
-      console.error(`Error appending row to ${sheetName}:`, error);
+      console.error(`[Sheets] Error appending row to ${sheetName}:`, error);
       return {
         success: false,
         error: `Failed to append row to sheet: ${sheetName}`,
@@ -203,11 +209,7 @@ export class GoogleSheetsRepository {
       const response = await fetch(APPS_SCRIPT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          headers,
-          values,
-        }),
+        body: JSON.stringify({ sheetName, headers, values }),
       });
 
       const result = await response.json();
@@ -218,7 +220,7 @@ export class GoogleSheetsRepository {
 
       return { success: true, message: "Row appended successfully" };
     } catch (error) {
-      console.error(`Error appending row to ${sheetName}:`, error);
+      console.error(`[Sheets] Error appending row to ${sheetName}:`, error);
       return {
         success: false,
         error: `Failed to append row to sheet: ${sheetName}`,
@@ -227,23 +229,19 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * Update a row - NOT supported via public CSV/Apps Script approach
+   * Update a row - NOT supported
    */
-  async updateRow(
-    _sheetName: string,
-    _rowIndex: number,
-    _values: (string | number)[]
-  ): Promise<ApiResponse<void>> {
+  async updateRow(): Promise<ApiResponse<void>> {
     return {
       success: false,
-      error: "Update not supported in public sheets mode. Use delete + create instead.",
+      error: "Update not supported in public sheets mode.",
     };
   }
 
   /**
-   * Delete a row - NOT supported via public CSV/Apps Script approach
+   * Delete a row - NOT supported
    */
-  async deleteRow(_sheetName: string, _rowIndex: number): Promise<ApiResponse<void>> {
+  async deleteRow(): Promise<ApiResponse<void>> {
     return {
       success: false,
       error: "Delete not supported in public sheets mode.",
@@ -252,7 +250,6 @@ export class GoogleSheetsRepository {
 
   /**
    * Find a row index by primary key value
-   * Returns the 1-based row index (header = row 1)
    */
   async findRowIndex(
     sheetName: string,
@@ -265,13 +262,13 @@ export class GoogleSheetsRepository {
 
       for (let i = 0; i < result.data.length; i++) {
         if (result.data[i][primaryKeyColumn] === primaryKeyValue) {
-          return i + 2; // +2 because: +1 for 0->1-based, +1 for header row
+          return i + 2;
         }
       }
 
       return null;
     } catch (error) {
-      console.error(`Error finding row in ${sheetName}:`, error);
+      console.error(`[Sheets] Error finding row in ${sheetName}:`, error);
       return null;
     }
   }
