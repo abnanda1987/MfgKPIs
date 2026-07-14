@@ -270,7 +270,7 @@ export class MasterDataRepository {
 
     const allResult = await this.getAll(sheetName);
     if (!allResult.success || !allResult.data) {
-      return allResult;
+      return { success: false, error: allResult.error || "Failed to fetch data" };
     }
 
     const record = allResult.data.find(
@@ -351,7 +351,7 @@ export class MasterDataRepository {
   ): Promise<ApiResponse<string[]>> {
     const result = await this.getAll(lookupSheet);
     if (!result.success || !result.data) {
-      return result as ApiResponse<string[]>;
+      return { success: false, error: result.error || "Failed to fetch lookup data" };
     }
 
     const values = result.data
