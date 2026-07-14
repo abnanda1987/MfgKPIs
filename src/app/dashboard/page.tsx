@@ -28,114 +28,24 @@ import {
 } from "lucide-react";
 
 const MASTER_CARDS = [
-  {
-    name: "Enterprise",
-    description: "Enterprise reference data",
-    icon: Globe,
-    color: "bg-blue-50 text-blue-600",
-  },
-  {
-    name: "Country",
-    description: "Country reference data",
-    icon: MapPin,
-    color: "bg-green-50 text-green-600",
-  },
-  {
-    name: "City",
-    description: "City reference data",
-    icon: Building2,
-    color: "bg-emerald-50 text-emerald-600",
-  },
-  {
-    name: "Plant",
-    description: "Manufacturing plants",
-    icon: Factory,
-    color: "bg-indigo-50 text-indigo-600",
-  },
-  {
-    name: "Department",
-    description: "Departments by plant",
-    icon: Building2,
-    color: "bg-violet-50 text-violet-600",
-  },
-  {
-    name: "ProductionLine",
-    description: "Production lines",
-    icon: GitBranch,
-    color: "bg-purple-50 text-purple-600",
-  },
-  {
-    name: "Machine",
-    description: "Machine master data",
-    icon: Cpu,
-    color: "bg-cyan-50 text-cyan-600",
-  },
-  {
-    name: "Product_SKU",
-    description: "Product SKUs",
-    icon: Package,
-    color: "bg-amber-50 text-amber-600",
-  },
-  {
-    name: "User",
-    description: "User management",
-    icon: Users,
-    color: "bg-rose-50 text-rose-600",
-  },
-  {
-    name: "Problem",
-    description: "Problem definitions",
-    icon: AlertTriangle,
-    color: "bg-red-50 text-red-600",
-  },
-  {
-    name: "Role",
-    description: "User roles",
-    icon: Shield,
-    color: "bg-slate-50 text-slate-600",
-  },
-  {
-    name: "Shift",
-    description: "Shift definitions",
-    icon: Clock,
-    color: "bg-orange-50 text-orange-600",
-  },
-  {
-    name: "KPI",
-    description: "KPI definitions",
-    icon: BarChart3,
-    color: "bg-teal-50 text-teal-600",
-  },
-  {
-    name: "AlertThreshold",
-    description: "Alert thresholds",
-    icon: AlertTriangle,
-    color: "bg-pink-50 text-pink-600",
-  },
-  {
-    name: "ProblemCategory",
-    description: "Problem categories",
-    icon: ClipboardList,
-    color: "bg-lime-50 text-lime-600",
-  },
-  {
-    name: "Severity",
-    description: "Severity levels",
-    icon: Shield,
-    color: "bg-fuchsia-50 text-fuchsia-600",
-  },
-  {
-    name: "Status",
-    description: "Status values",
-    icon: Settings,
-    color: "bg-gray-50 text-gray-600",
-  },
-  {
-    name: "Calendar",
-    description: "Calendar reference",
-    icon: CalendarDays,
-    color: "bg-sky-50 text-sky-600",
-  },
+  { name: "Enterprise", description: "Enterprise reference data", icon: Globe, color: "bg-blue-50 text-blue-600" },
+  { name: "Country", description: "Country reference data", icon: MapPin, color: "bg-green-50 text-green-600" },
+  { name: "City", description: "City reference data", icon: Building2, color: "bg-emerald-50 text-emerald-600" },
+  { name: "Plant", description: "Manufacturing plants", icon: Factory, color: "bg-indigo-50 text-indigo-600" },
+  { name: "Department", description: "Departments by plant", icon: Building2, color: "bg-violet-50 text-violet-600" },
+  { name: "ProductionLine", description: "Production lines", icon: GitBranch, color: "bg-purple-50 text-purple-600" },
+  { name: "Machine", description: "Machine master data", icon: Cpu, color: "bg-cyan-50 text-cyan-600" },
+  { name: "Product_SKU", description: "Product SKUs", icon: Package, color: "bg-amber-50 text-amber-600" },
+  { name: "User", description: "User management", icon: Users, color: "bg-rose-50 text-rose-600" },
+  { name: "Problem", description: "Problem definitions", icon: AlertTriangle, color: "bg-red-50 text-red-600" },
+  { name: "Role", description: "User roles", icon: Shield, color: "bg-slate-50 text-slate-600" },
+  { name: "Shift", description: "Shift definitions", icon: Clock, color: "bg-orange-50 text-orange-600" },
+  { name: "KPI", description: "KPI definitions", icon: BarChart3, color: "bg-teal-50 text-teal-600" },
+  { name: "AlertThreshold", description: "Alert thresholds", icon: AlertTriangle, color: "bg-pink-50 text-pink-600" },
+  { name: "ProblemCategory", description: "Problem categories", icon: ClipboardList, color: "bg-lime-50 text-lime-600" },
+  { name: "Severity", description: "Severity levels", icon: Shield, color: "bg-fuchsia-50 text-fuchsia-600" },
+  { name: "Status", description: "Status values", icon: Settings, color: "bg-gray-50 text-gray-600" },
+  { name: "Calendar", description: "Calendar reference", icon: CalendarDays, color: "bg-sky-50 text-sky-600" },
 ];
 
 export default function DashboardPage() {
@@ -143,8 +53,12 @@ export default function DashboardPage() {
   const router = useRouter();
 
   useEffect(() => {
+    // Auto-redirect to login if no user after a short delay
     if (!isLoading && !user) {
-      router.push("/");
+      const timer = setTimeout(() => {
+        router.push("/");
+      }, 2000);
+      return () => clearTimeout(timer);
     }
   }, [user, isLoading, router]);
 
@@ -156,11 +70,17 @@ export default function DashboardPage() {
     );
   }
 
-  if (!user) return null;
+  // If no user, show a simple loading state while redirecting
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-muted-foreground">Redirecting to login...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
       <header className="bg-white border-b shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
@@ -175,9 +95,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex items-center gap-4">
               <div className="text-right hidden sm:block">
-                <p className="text-sm font-medium">
-                  {user.firstName} {user.lastName}
-                </p>
+                <p className="text-sm font-medium">{user.firstName} {user.lastName}</p>
                 <p className="text-xs text-muted-foreground">{user.role}</p>
               </div>
               <Badge variant="secondary">{user.plantId}</Badge>
@@ -189,9 +107,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Quick Actions */}
         <div className="mb-8">
           <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
           <div className="flex flex-wrap gap-3">
@@ -204,7 +120,6 @@ export default function DashboardPage() {
 
         <Separator className="mb-8" />
 
-        {/* Master Data Cards */}
         <div>
           <h2 className="text-xl font-semibold mb-4">Master Data</h2>
           <p className="text-sm text-muted-foreground mb-6">
@@ -227,9 +142,7 @@ export default function DashboardPage() {
                       <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                     </div>
                     <CardTitle className="text-base mt-2">{card.name}</CardTitle>
-                    <CardDescription className="text-xs">
-                      {card.description}
-                    </CardDescription>
+                    <CardDescription className="text-xs">{card.description}</CardDescription>
                   </CardHeader>
                 </Card>
               );
