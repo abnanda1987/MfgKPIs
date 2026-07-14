@@ -29,7 +29,13 @@ function parseCSV(csvText: string): SheetRow[] {
     const values = parseCSVLine(lines[i]);
     const record: SheetRow = {};
     headers.forEach((header, index) => {
-      record[header] = values[index] ?? "";
+      // Trim whitespace and remove surrounding quotes
+      let val = values[index] ?? "";
+      val = val.trim();
+      if (val.startsWith('"') && val.endsWith('"')) {
+        val = val.slice(1, -1);
+      }
+      record[header] = val;
     });
     records.push(record);
   }
@@ -74,7 +80,6 @@ function getCSVExportUrl(spreadsheetId: string, sheetGid: number): string {
 }
 
 // Sheet name to GID mapping for the master workbook
-// GID 0 = first sheet, then increments
 const SHEET_GID_MAP: Record<string, number> = {
   Enterprise: 0,
   Country: 1,
@@ -223,7 +228,6 @@ export class GoogleSheetsRepository {
 
   /**
    * Update a row - NOT supported via public CSV/Apps Script approach
-   * Returns error; would need row index tracking or different approach
    */
   async updateRow(
     _sheetName: string,

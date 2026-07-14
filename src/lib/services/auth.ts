@@ -20,21 +20,44 @@ export class AuthService {
       const result = await MasterDataRepository.getAll("User");
 
       if (!result.success || !result.data) {
+        console.error("Auth: Failed to fetch user data:", result.error);
         return { success: false, error: "Failed to fetch user data" };
       }
 
-      const user = result.data.find(
-        (row: SheetRow) =>
-          row["Email"] === credentials.email &&
-          row["Password"] === credentials.password
-      );
+      console.log("Auth: Fetched", result.data.length, "users");
+
+      // Debug: log first few users
+      result.data.slice(0, 3).forEach((u, i) => {
+        console.log(`Auth: User ${i}:`, {
+          email: u["Email"],
+          role: u["User Role"],
+          password: u["Password"],
+        });
+      });
+
+      const inputEmail = credentials.email.trim().toLowerCase();
+      const inputPassword = credentials.password.trim();
+
+      const user = result.data.find((row: SheetRow) => {
+        const sheetEmail = String(row["Email"] ?? "").trim().toLowerCase();
+        const sheetPassword = String(row["Password"] ?? "").trim();
+        const match = sheetEmail === inputEmail && sheetPassword === inputPassword;
+        if (sheetEmail === inputEmail) {
+          console.log("Auth: Email match found:", sheetEmail, "password match:", match);
+        }
+        return match;
+      });
 
       if (!user) {
+        console.log("Auth: No user found for email:", inputEmail);
         return { success: false, error: "Invalid email or password" };
       }
 
       // Phase 1: Only Admin users can log in
-      if (user["User Role"] !== "Admin") {
+      const userRole = String(user["User Role"] ?? "").trim();
+      console.log("Auth: User role:", userRole);
+
+      if (userRole !== "Admin") {
         return {
           success: false,
           error: "Access denied. Only Admin users can log in.",
@@ -42,13 +65,14 @@ export class AuthService {
       }
 
       const authUser: AuthUser = {
-        email: String(user["Email"]),
-        role: String(user["User Role"]),
-        plantId: String(user["Associated Plant ID"]),
-        firstName: String(user["First Name"]),
-        lastName: String(user["Last Name"]),
+        email: String(user["Email"]).trim(),
+        role: userRole,
+        plantId: String(user["Associated Plant ID"]).trim(),
+        firstName: String(user["First Name"]).trim(),
+        lastName: String(user["Last Name"]).trim(),
       };
 
+      console.log("Auth: Success for", authUser.email);
       return { success: true, data: authUser };
     } catch (error) {
       console.error("Authentication error:", error);
@@ -64,15 +88,17 @@ export class AuthService {
       const result = await MasterDataRepository.getAll("User");
       if (!result.success || !result.data) return null;
 
-      const user = result.data.find((row: SheetRow) => row["Email"] === email);
+      const user = result.data.find((row: SheetRow) => 
+        String(row["Email"] ?? "").trim().toLowerCase() === email.trim().toLowerCase()
+      );
       if (!user) return null;
 
       return {
-        email: String(user["Email"]),
-        role: String(user["User Role"]),
-        plantId: String(user["Associated Plant ID"]),
-        firstName: String(user["First Name"]),
-        lastName: String(user["Last Name"]),
+        email: String(user["Email"]).trim(),
+        role: String(user["User Role"]).trim(),
+        plantId: String(user["Associated Plant ID"]).trim(),
+        firstName: String(user["First Name"]).trim(),
+        lastName: String(user["Last Name"]).trim(),
       };
     } catch {
       return null;
