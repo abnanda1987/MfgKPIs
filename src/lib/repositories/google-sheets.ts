@@ -2,13 +2,17 @@
  * Google Sheets Repository - Public Sheets (No API Key)
  * 
  * Reads via public gviz/tq CSV export (by sheet name).
- * Writes via Google Apps Script Web App (batch + CRUD).
+ * Writes via Google Apps Script Web App.
+ * 
+ * MASTER CRUD -> GOOGLE_APPS_SCRIPT_MASTER_URL (master workbook)
+ * SIMULATOR   -> GOOGLE_APPS_SCRIPT_TRANSACTION_URL (transaction workbook)
  */
 
 import { SheetRow, ApiResponse } from "@/lib/types";
 
 const MASTER_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_MASTER_ID || "";
-const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || "";
+const APPS_SCRIPT_MASTER_URL = process.env.GOOGLE_APPS_SCRIPT_MASTER_URL || "";
+const APPS_SCRIPT_TRANSACTION_URL = process.env.GOOGLE_APPS_SCRIPT_TRANSACTION_URL || "";
 
 // ============================================================
 // CSV Parsing Helper
@@ -74,7 +78,6 @@ function getGvizUrl(spreadsheetId: string, sheetName: string): string {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
 }
 
-// Fallback: standard export URL (by gid)
 function getExportUrl(spreadsheetId: string, gid: number): string {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 }
@@ -150,7 +153,41 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * BATCH APPEND: Append multiple rows in one request
+   * Write operation to MASTER workbook (CRUD)
+   */
+  private async writeToMaster(data: unknown): Promise<ApiResponse<unknown>> {
+    if (!APPS_SCRIPT_MASTER_URL) {
+      return { success: false, error: "Master Apps Script URL not configured" };
+    }
+
+    const response = await fetch(APPS_SCRIPT_MASTER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    return await response.json();
+  }
+
+  /**
+   * Write operation to TRANSACTION workbook (simulator)
+   */
+  private async writeToTransaction(data: unknown): Promise<ApiResponse<unknown>> {
+    if (!APPS_SCRIPT_TRANSACTION_URL) {
+      return { success: false, error: "Transaction Apps Script URL not configured" };
+    }
+
+    const response = await fetch(APPS_SCRIPT_TRANSACTION_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    return await response.json();
+  }
+
+  /**
+   * BATCH APPEND to MASTER workbook
    */
   async batchAppend(
     sheetName: string,
@@ -158,28 +195,18 @@ export class GoogleSheetsRepository {
     rows: (string | number)[][]
   ): Promise<ApiResponse<{ count: number }>> {
     try {
-      if (!APPS_SCRIPT_URL) {
-        return { success: false, error: "Apps Script URL not configured" };
-      }
-
-      const response = await fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          headers,
-          rows,
-          batch: true,
-        }),
+      const result = await this.writeToMaster({
+        sheetName,
+        headers,
+        rows,
+        batch: true,
       });
 
-      const result = await response.json();
-
       if (!result.success) {
-        return { success: false, error: result.error || "Batch append failed" };
+        return { success: false, error: String(result.error || "Batch append failed") };
       }
 
-      return { success: true, data: { count: rows.length }, message: result.message };
+      return { success: true, data: { count: rows.length }, message: String(result.message || "") };
     } catch (error) {
       console.error(`[Sheets] Error batch appending to ${sheetName}:`, error);
       return {
@@ -190,47 +217,37 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * BATCH OVERWRITE: Clear sheet and rewrite all data
+   * BATCH APPEND to TRANSACTION workbook (simulator)
    */
-  async batchOverwrite(
+  async batchAppendTransaction(
     sheetName: string,
     headers: string[],
     rows: (string | number)[][]
   ): Promise<ApiResponse<{ count: number }>> {
     try {
-      if (!APPS_SCRIPT_URL) {
-        return { success: false, error: "Apps Script URL not configured" };
-      }
-
-      const response = await fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          headers,
-          rows,
-          overwrite: true,
-        }),
+      const result = await this.writeToTransaction({
+        sheetName,
+        headers,
+        rows,
+        batch: true,
       });
 
-      const result = await response.json();
-
       if (!result.success) {
-        return { success: false, error: result.error || "Batch overwrite failed" };
+        return { success: false, error: String(result.error || "Batch append failed") };
       }
 
-      return { success: true, data: { count: rows.length }, message: result.message };
+      return { success: true, data: { count: rows.length }, message: String(result.message || "") };
     } catch (error) {
-      console.error(`[Sheets] Error batch overwriting ${sheetName}:`, error);
+      console.error(`[Sheets] Error batch appending to transaction ${sheetName}:`, error);
       return {
         success: false,
-        error: `Failed to batch overwrite sheet: ${sheetName}`,
+        error: `Failed to batch append to transaction sheet: ${sheetName}`,
       };
     }
   }
 
   /**
-   * UPDATE ROW: Find by primary key and update
+   * UPDATE ROW in MASTER workbook
    */
   async updateRow(
     sheetName: string,
@@ -239,26 +256,16 @@ export class GoogleSheetsRepository {
     values: (string | number)[]
   ): Promise<ApiResponse<void>> {
     try {
-      if (!APPS_SCRIPT_URL) {
-        return { success: false, error: "Apps Script URL not configured" };
-      }
-
-      const response = await fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          action: "update",
-          primaryKey,
-          primaryKeyValue,
-          values,
-        }),
+      const result = await this.writeToMaster({
+        sheetName,
+        action: "update",
+        primaryKey,
+        primaryKeyValue,
+        values,
       });
 
-      const result = await response.json();
-
       if (!result.success) {
-        return { success: false, error: result.error || "Update failed" };
+        return { success: false, error: String(result.error || "Update failed") };
       }
 
       return { success: true, message: "Row updated successfully" };
@@ -272,7 +279,7 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * DELETE ROW: Find by primary key and delete
+   * DELETE ROW from MASTER workbook
    */
   async deleteRow(
     sheetName: string,
@@ -280,25 +287,15 @@ export class GoogleSheetsRepository {
     primaryKeyValue: string
   ): Promise<ApiResponse<void>> {
     try {
-      if (!APPS_SCRIPT_URL) {
-        return { success: false, error: "Apps Script URL not configured" };
-      }
-
-      const response = await fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sheetName,
-          action: "delete",
-          primaryKey,
-          primaryKeyValue,
-        }),
+      const result = await this.writeToMaster({
+        sheetName,
+        action: "delete",
+        primaryKey,
+        primaryKeyValue,
       });
 
-      const result = await response.json();
-
       if (!result.success) {
-        return { success: false, error: result.error || "Delete failed" };
+        return { success: false, error: String(result.error || "Delete failed") };
       }
 
       return { success: true, message: "Row deleted successfully" };
@@ -312,7 +309,7 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * SINGLE APPEND (legacy)
+   * SINGLE APPEND to MASTER workbook
    */
   async appendRow(
     sheetName: string,
@@ -326,7 +323,7 @@ export class GoogleSheetsRepository {
   }
 
   /**
-   * SINGLE APPEND with headers (legacy)
+   * SINGLE APPEND with headers to MASTER workbook
    */
   async appendRowWithHeaders(
     sheetName: string,

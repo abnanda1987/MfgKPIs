@@ -2,8 +2,7 @@
  * POST /api/simulator/run
  * 
  * Fast batch simulator - generates all records in memory, 
- * then sends one batch write to Apps Script.
- * Target: ~15 seconds for 100s of records.
+ * then sends one batch write to Apps Script (transaction workbook).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -11,17 +10,8 @@ import { sheetsRepository } from "@/lib/repositories/google-sheets";
 import { MasterDataRepository } from "@/lib/repositories/master-data";
 import {
   SimulatorConfig,
-  ProductionRun,
-  MachineOperation,
-  KPISnapshot,
-  ProductionProblem,
-  CorrectiveAction,
-  AlertLog,
-  SimulationRun,
   SheetRow,
 } from "@/lib/types";
-
-const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || "";
 
 // ============================================================
 // Helpers
@@ -109,11 +99,8 @@ class ManufacturingSimulator {
   private simulationId: string;
   private recordsGenerated = 0;
   private sheetsCreated: string[] = [];
-
-  // Batched data
   private batchData: Record<string, (string | number)[][]> = {};
 
-  // Master data caches
   private machines: SheetRow[] = [];
   private lines: SheetRow[] = [];
   private products: SheetRow[] = [];
@@ -125,7 +112,6 @@ class ManufacturingSimulator {
   constructor(config: SimulatorConfig) {
     this.config = config;
     this.simulationId = generateId("SIM");
-    // Initialize batch arrays
     Object.keys(TRANSACTION_HEADERS).forEach(sheet => {
       this.batchData[sheet] = [];
     });
@@ -150,7 +136,6 @@ class ManufacturingSimulator {
     this.alertThresholds = thresholdsRes.data || [];
     this.problems = problemsRes.data || [];
 
-    // Filter by plant
     this.machines = this.machines.filter((m) =>
       String(m["Associated Line"]).startsWith(this.config.plantId)
     );
@@ -183,7 +168,6 @@ class ManufacturingSimulator {
     const scenarioConfig = SCENARIO_CONFIGS[this.config.scenario];
     const endDate = addDays(this.config.startDate, this.config.numberOfDays - 1);
 
-    // Generate all data in memory (no network calls)
     for (let day = 0; day < this.config.numberOfDays; day++) {
       const currentDate = addDays(this.config.startDate, day);
 
@@ -205,7 +189,6 @@ class ManufacturingSimulator {
           const rejectQty = Math.round(actualQty * scenarioConfig.rejectRate * randomInRange(0.5, 1.5));
           const runId = generateId("RUN");
 
-          // Production Run
           this.batchData["Production_Run"].push([
             runId, this.config.plantId, String(line["Line ID"]), String(product["Product ID"]),
             currentDate, shift, plannedQty, actualQty, rejectQty,
@@ -213,7 +196,6 @@ class ManufacturingSimulator {
           ]);
           this.recordsGenerated++;
 
-          // Machine Operations
           for (const machine of lineMachines) {
             const plannedRuntime = 480;
             const downtime = Math.round(
@@ -232,7 +214,6 @@ class ManufacturingSimulator {
             this.recordsGenerated++;
           }
 
-          // KPI Snapshots
           const oee = Math.round(((actualQty / plannedQty) * 0.95 + (1 - scenarioConfig.downtimeMultiplier * 0.1)) * 50);
           const availability = Math.round(100 - scenarioConfig.downtimeMultiplier * 2 * randomInRange(0.8, 1.2));
           const performance = Math.round((actualQty / plannedQty) * 100);
@@ -282,7 +263,6 @@ class ManufacturingSimulator {
             }
           }
 
-          // Production Problems
           if (Math.random() < scenarioConfig.problemChance) {
             const problemDef = pickRandom(this.problems);
             if (problemDef) {
@@ -308,7 +288,6 @@ class ManufacturingSimulator {
       }
     }
 
-    // Simulation Run record
     this.batchData["Simulation_Run"].push([
       this.simulationId, this.config.plantId, this.config.startDate, endDate,
       this.config.scenario, this.config.randomness, this.recordsGenerated,
@@ -316,12 +295,12 @@ class ManufacturingSimulator {
     ]);
     this.recordsGenerated++;
 
-    // BATCH WRITE: Send all data to Apps Script in parallel
+    // BATCH WRITE to TRANSACTION workbook
     const writePromises = Object.entries(this.batchData)
       .filter(([_, rows]) => rows.length > 0)
       .map(([sheetName, rows]) => {
         this.sheetsCreated.push(sheetName);
-        return sheetsRepository.batchAppend(
+        return sheetsRepository.batchAppendTransaction(
           sheetName,
           TRANSACTION_HEADERS[sheetName] || [],
           rows
@@ -349,13 +328,6 @@ class ManufacturingSimulator {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!APPS_SCRIPT_URL) {
-      return NextResponse.json(
-        { success: false, error: "Apps Script URL not configured" },
-        { status: 500 }
-      );
-    }
-
     const config: SimulatorConfig = await request.json();
 
     if (!config.plantId || !config.startDate || !config.numberOfDays || !config.scenario) {
