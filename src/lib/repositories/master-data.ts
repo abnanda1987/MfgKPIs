@@ -1,22 +1,12 @@
 /**
  * Master Data Repository
  * 
- * Provides CRUD operations for all master data entities.
+ * Full CRUD operations for all master data entities.
  * Uses public CSV export for reads, Apps Script Web App for writes.
- * 
- * Each entity maps to one worksheet in the Master Data workbook.
  */
 
 import { sheetsRepository } from "./google-sheets";
-import {
-  SheetRow,
-  ApiResponse,
-  SheetSchema,
-} from "@/lib/types";
-
-// ============================================================
-// Sheet Schemas (derived from Master Data Design Document V3)
-// ============================================================
+import { SheetRow, ApiResponse, SheetSchema } from "@/lib/types";
 
 export const MASTER_SHEET_SCHEMAS: Record<string, SheetSchema> = {
   Enterprise: {
@@ -220,25 +210,12 @@ export const MASTER_SHEET_SCHEMAS: Record<string, SheetSchema> = {
   },
 };
 
-// ============================================================
-// Master Data Service
-// ============================================================
-
 export class MasterDataRepository {
-  /**
-   * Get all records from a master sheet
-   */
   static async getAll(sheetName: string): Promise<ApiResponse<SheetRow[]>> {
     return sheetsRepository.readSheet(sheetName);
   }
 
-  /**
-   * Get records filtered by plant (if applicable)
-   */
-  static async getByPlant(
-    sheetName: string,
-    plantId: string
-  ): Promise<ApiResponse<SheetRow[]>> {
+  static async getByPlant(sheetName: string, plantId: string): Promise<ApiResponse<SheetRow[]>> {
     const schema = MASTER_SHEET_SCHEMAS[sheetName];
     if (!schema?.hasPlantFilter || !schema.plantColumn) {
       return this.getAll(sheetName);
@@ -249,20 +226,11 @@ export class MasterDataRepository {
       return allResult;
     }
 
-    const filtered = allResult.data.filter(
-      (row) => row[schema.plantColumn!] === plantId
-    );
-
+    const filtered = allResult.data.filter((row) => row[schema.plantColumn!] === plantId);
     return { success: true, data: filtered };
   }
 
-  /**
-   * Get a single record by primary key
-   */
-  static async getById(
-    sheetName: string,
-    id: string
-  ): Promise<ApiResponse<SheetRow | null>> {
+  static async getById(sheetName: string, id: string): Promise<ApiResponse<SheetRow | null>> {
     const schema = MASTER_SHEET_SCHEMAS[sheetName];
     if (!schema) {
       return { success: false, error: `Unknown sheet: ${sheetName}` };
@@ -273,26 +241,16 @@ export class MasterDataRepository {
       return { success: false, error: allResult.error || "Failed to fetch data" };
     }
 
-    const record = allResult.data.find(
-      (row) => row[schema.primaryKey] === id
-    );
-
+    const record = allResult.data.find((row) => row[schema.primaryKey] === id);
     return { success: true, data: record || null };
   }
 
-  /**
-   * Create a new record (append via Apps Script)
-   */
-  static async create(
-    sheetName: string,
-    data: SheetRow
-  ): Promise<ApiResponse<void>> {
+  static async create(sheetName: string, data: SheetRow): Promise<ApiResponse<void>> {
     const schema = MASTER_SHEET_SCHEMAS[sheetName];
     if (!schema) {
       return { success: false, error: `Unknown sheet: ${sheetName}` };
     }
 
-    // Build values array in column order
     const values = schema.columns.map((col) => {
       const val = data[col.name];
       return val !== undefined && val !== null ? String(val) : "";
@@ -301,54 +259,30 @@ export class MasterDataRepository {
     return sheetsRepository.appendRow(sheetName, values);
   }
 
-  /**
-   * Update an existing record
-   * NOTE: In public sheets mode, update is not supported directly.
-   * We append the updated row and note that the old one remains.
-   */
-  static async update(
-    sheetName: string,
-    id: string,
-    data: SheetRow
-  ): Promise<ApiResponse<void>> {
+  static async update(sheetName: string, id: string, data: SheetRow): Promise<ApiResponse<void>> {
     const schema = MASTER_SHEET_SCHEMAS[sheetName];
     if (!schema) {
       return { success: false, error: `Unknown sheet: ${sheetName}` };
     }
 
-    // In public sheets mode, we can't update in-place.
-    // We append the new row. The UI will show both old and new.
-    // For a demo, this is acceptable. In production, use the API.
     const values = schema.columns.map((col) => {
       const val = data[col.name];
       return val !== undefined && val !== null ? String(val) : "";
     });
 
-    return sheetsRepository.appendRow(sheetName, values);
+    return sheetsRepository.updateRow(sheetName, schema.primaryKey, id, values);
   }
 
-  /**
-   * Delete a record
-   * NOTE: Not supported in public sheets mode
-   */
-  static async delete(
-    sheetName: string,
-    _id: string
-  ): Promise<ApiResponse<void>> {
-    console.warn(`Delete requested for ${sheetName} - not supported in public sheets mode`);
-    return {
-      success: false,
-      error: "Delete not supported in public sheets mode. The sheet must be edited directly in Google Sheets.",
-    };
+  static async delete(sheetName: string, id: string): Promise<ApiResponse<void>> {
+    const schema = MASTER_SHEET_SCHEMAS[sheetName];
+    if (!schema) {
+      return { success: false, error: `Unknown sheet: ${sheetName}` };
+    }
+
+    return sheetsRepository.deleteRow(sheetName, schema.primaryKey, id);
   }
 
-  /**
-   * Get lookup values for a foreign key column
-   */
-  static async getLookupValues(
-    lookupSheet: string,
-    lookupColumn: string
-  ): Promise<ApiResponse<string[]>> {
+  static async getLookupValues(lookupSheet: string, lookupColumn: string): Promise<ApiResponse<string[]>> {
     const result = await this.getAll(lookupSheet);
     if (!result.success || !result.data) {
       return { success: false, error: result.error || "Failed to fetch lookup data" };
@@ -361,16 +295,10 @@ export class MasterDataRepository {
     return { success: true, data: values };
   }
 
-  /**
-   * Get all available master sheet names
-   */
   static getSheetNames(): string[] {
     return Object.keys(MASTER_SHEET_SCHEMAS);
   }
 
-  /**
-   * Get schema for a sheet
-   */
   static getSchema(sheetName: string): SheetSchema | undefined {
     return MASTER_SHEET_SCHEMAS[sheetName];
   }

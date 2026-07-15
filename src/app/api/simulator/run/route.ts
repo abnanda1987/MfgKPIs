@@ -1,11 +1,9 @@
 /**
  * POST /api/simulator/run
  * 
- * Runs the manufacturing simulator and writes transaction data
- * via Google Apps Script Web App.
- * 
- * Input: { plantId, startDate, numberOfDays, scenario, randomness }
- * Output: { simulationId, recordsGenerated, sheetsCreated }
+ * Fast batch simulator - generates all records in memory, 
+ * then sends one batch write to Apps Script.
+ * Target: ~15 seconds for 100s of records.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,7 +24,7 @@ import {
 const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || "";
 
 // ============================================================
-// Helper Functions
+// Helpers
 // ============================================================
 
 function generateId(prefix: string): string {
@@ -54,7 +52,7 @@ function pickRandom<T>(arr: T[]): T {
 }
 
 // ============================================================
-// Scenario Configurations
+// Scenario Configs
 // ============================================================
 
 const SCENARIO_CONFIGS = {
@@ -92,40 +90,18 @@ const SCENARIO_CONFIGS = {
   },
 };
 
-// Transaction sheet headers
 const TRANSACTION_HEADERS: Record<string, string[]> = {
-  Production_Run: [
-    "Run ID", "Plant ID", "Line ID", "Product ID", "Date", "Shift",
-    "Planned Quantity", "Actual Quantity", "Reject Quantity", "Status",
-  ],
-  Machine_Operation: [
-    "Operation ID", "Machine ID", "Run ID", "Date", "Shift",
-    "Planned Runtime (Min)", "Actual Runtime (Min)", "Downtime (Min)",
-    "Energy Consumed (kWh)", "Status",
-  ],
-  KPI_Snapshot: [
-    "Snapshot ID", "Plant ID", "Date", "Shift", "KPI", "Value",
-    "Target", "Status",
-  ],
-  Production_Problem: [
-    "Problem ID", "Run ID", "Machine ID", "Line ID", "Date", "Shift",
-    "Problem", "Category", "Severity", "Description", "Status",
-  ],
-  Corrective_Action: [
-    "Action ID", "Problem ID", "Date", "Action", "Assigned To", "Status",
-  ],
-  Alert_Log: [
-    "Alert ID", "Plant ID", "Date", "KPI", "Value", "Threshold",
-    "Level", "Message", "Status",
-  ],
-  Simulation_Run: [
-    "Simulation ID", "Plant ID", "Start Date", "End Date", "Scenario",
-    "Randomness (%)", "Records Generated", "Generated At",
-  ],
+  Production_Run: ["Run ID", "Plant ID", "Line ID", "Product ID", "Date", "Shift", "Planned Quantity", "Actual Quantity", "Reject Quantity", "Status"],
+  Machine_Operation: ["Operation ID", "Machine ID", "Run ID", "Date", "Shift", "Planned Runtime (Min)", "Actual Runtime (Min)", "Downtime (Min)", "Energy Consumed (kWh)", "Status"],
+  KPI_Snapshot: ["Snapshot ID", "Plant ID", "Date", "Shift", "KPI", "Value", "Target", "Status"],
+  Production_Problem: ["Problem ID", "Run ID", "Machine ID", "Line ID", "Date", "Shift", "Problem", "Category", "Severity", "Description", "Status"],
+  Corrective_Action: ["Action ID", "Problem ID", "Date", "Action", "Assigned To", "Status"],
+  Alert_Log: ["Alert ID", "Plant ID", "Date", "KPI", "Value", "Threshold", "Level", "Message", "Status"],
+  Simulation_Run: ["Simulation ID", "Plant ID", "Start Date", "End Date", "Scenario", "Randomness (%)", "Records Generated", "Generated At"],
 };
 
 // ============================================================
-// Simulator Engine
+// Fast Simulator Engine (batch mode)
 // ============================================================
 
 class ManufacturingSimulator {
@@ -134,10 +110,12 @@ class ManufacturingSimulator {
   private recordsGenerated = 0;
   private sheetsCreated: string[] = [];
 
+  // Batched data
+  private batchData: Record<string, (string | number)[][]> = {};
+
   // Master data caches
   private machines: SheetRow[] = [];
   private lines: SheetRow[] = [];
-  private departments: SheetRow[] = [];
   private products: SheetRow[] = [];
   private shifts = ["S1", "S2", "S3"];
   private kpis: SheetRow[] = [];
@@ -147,6 +125,10 @@ class ManufacturingSimulator {
   constructor(config: SimulatorConfig) {
     this.config = config;
     this.simulationId = generateId("SIM");
+    // Initialize batch arrays
+    Object.keys(TRANSACTION_HEADERS).forEach(sheet => {
+      this.batchData[sheet] = [];
+    });
   }
 
   async loadMasterData(): Promise<void> {
@@ -163,7 +145,6 @@ class ManufacturingSimulator {
 
     this.machines = machinesRes.data || [];
     this.lines = linesRes.data || [];
-    this.departments = deptsRes.data || [];
     this.products = productsRes.data || [];
     this.kpis = kpisRes.data || [];
     this.alertThresholds = thresholdsRes.data || [];
@@ -175,9 +156,6 @@ class ManufacturingSimulator {
     );
     this.lines = this.lines.filter((l) =>
       String(l["Associated Department"]).startsWith(this.config.plantId)
-    );
-    this.departments = this.departments.filter((d) =>
-      String(d["Associated Plant ID"]) === this.config.plantId
     );
     this.products = this.products.filter((p) =>
       String(p["Associated Department ID"]).startsWith(this.config.plantId)
@@ -205,12 +183,11 @@ class ManufacturingSimulator {
     const scenarioConfig = SCENARIO_CONFIGS[this.config.scenario];
     const endDate = addDays(this.config.startDate, this.config.numberOfDays - 1);
 
-    // Generate data for each day and shift
+    // Generate all data in memory (no network calls)
     for (let day = 0; day < this.config.numberOfDays; day++) {
       const currentDate = addDays(this.config.startDate, day);
 
       for (const shift of this.shifts) {
-        // Generate production runs for each line
         for (const line of this.lines) {
           const lineMachines = this.machines.filter(
             (m) => m["Associated Line"] === line["Line ID"]
@@ -222,99 +199,56 @@ class ManufacturingSimulator {
           if (lineMachines.length === 0 || lineProducts.length === 0) continue;
 
           const product = pickRandom(lineProducts);
-          const plannedQty = Math.round(
-            500 * scenarioConfig.plannedQtyMultiplier * randomInRange(0.9, 1.1)
-          );
-          const variance = randomInRange(
-            -scenarioConfig.actualQtyVariance,
-            scenarioConfig.actualQtyVariance
-          );
+          const plannedQty = Math.round(500 * scenarioConfig.plannedQtyMultiplier * randomInRange(0.9, 1.1));
+          const variance = randomInRange(-scenarioConfig.actualQtyVariance, scenarioConfig.actualQtyVariance);
           const actualQty = Math.round(plannedQty * (1 + variance));
           const rejectQty = Math.round(actualQty * scenarioConfig.rejectRate * randomInRange(0.5, 1.5));
-
           const runId = generateId("RUN");
 
           // Production Run
-          const productionRun: ProductionRun = {
-            "Run ID": runId,
-            "Plant ID": this.config.plantId,
-            "Line ID": String(line["Line ID"]),
-            "Product ID": String(product["Product ID"]),
-            Date: currentDate,
-            Shift: shift,
-            "Planned Quantity": plannedQty,
-            "Actual Quantity": actualQty,
-            "Reject Quantity": rejectQty,
-            Status: actualQty >= plannedQty * 0.9 ? "Completed" : "Partial",
-          };
-
-          await this.appendRow("Production_Run", Object.values(productionRun));
+          this.batchData["Production_Run"].push([
+            runId, this.config.plantId, String(line["Line ID"]), String(product["Product ID"]),
+            currentDate, shift, plannedQty, actualQty, rejectQty,
+            actualQty >= plannedQty * 0.9 ? "Completed" : "Partial",
+          ]);
           this.recordsGenerated++;
 
           // Machine Operations
           for (const machine of lineMachines) {
-            const cycleTime = Number(machine["Cycle Time (Sec)"]) || 35;
-            const plannedRuntime = 480; // 8 hours in minutes
+            const plannedRuntime = 480;
             const downtime = Math.round(
               (Number(machine["Downtime Target (Min)"]) || 30) *
-                scenarioConfig.downtimeMultiplier *
-                randomInRange(0.3, 1.5)
+              scenarioConfig.downtimeMultiplier * randomInRange(0.3, 1.5)
             );
             const actualRuntime = Math.max(0, plannedRuntime - downtime);
-            const energyConsumed =
-              (Number(machine["Energy Consumption (kWh)"]) || 10) *
-              (actualRuntime / 60) *
-              scenarioConfig.energyMultiplier;
+            const energyConsumed = (Number(machine["Energy Consumption (kWh)"]) || 10) * (actualRuntime / 60) * scenarioConfig.energyMultiplier;
 
-            const machineOp: MachineOperation = {
-              "Operation ID": generateId("OP"),
-              "Machine ID": String(machine["Machine ID"]),
-              "Run ID": runId,
-              Date: currentDate,
-              Shift: shift,
-              "Planned Runtime (Min)": plannedRuntime,
-              "Actual Runtime (Min)": actualRuntime,
-              "Downtime (Min)": downtime,
-              "Energy Consumed (kWh)": Math.round(energyConsumed * 100) / 100,
-              Status: downtime > 60 ? "Issue" : "Normal",
-            };
-
-            await this.appendRow("Machine_Operation", Object.values(machineOp));
+            this.batchData["Machine_Operation"].push([
+              generateId("OP"), String(machine["Machine ID"]), runId, currentDate, shift,
+              plannedRuntime, actualRuntime, downtime,
+              Math.round(energyConsumed * 100) / 100,
+              downtime > 60 ? "Issue" : "Normal",
+            ]);
             this.recordsGenerated++;
           }
 
           // KPI Snapshots
-          const oee = Math.round(
-            ((actualQty / plannedQty) * 0.95 +
-              (1 - scenarioConfig.downtimeMultiplier * 0.1)) *
-              50
-          );
-          const availability = Math.round(
-            100 - scenarioConfig.downtimeMultiplier * 2 * randomInRange(0.8, 1.2)
-          );
+          const oee = Math.round(((actualQty / plannedQty) * 0.95 + (1 - scenarioConfig.downtimeMultiplier * 0.1)) * 50);
+          const availability = Math.round(100 - scenarioConfig.downtimeMultiplier * 2 * randomInRange(0.8, 1.2));
           const performance = Math.round((actualQty / plannedQty) * 100);
-          const quality = Math.round(
-            ((actualQty - rejectQty) / Math.max(actualQty, 1)) * 100
-          );
+          const quality = Math.round(((actualQty - rejectQty) / Math.max(actualQty, 1)) * 100);
 
           const kpiValues = [
             { kpi: "OEE", value: Math.min(100, Math.max(0, oee)) },
             { kpi: "Availability", value: Math.min(100, Math.max(0, availability)) },
             { kpi: "Performance", value: Math.min(100, Math.max(0, performance)) },
             { kpi: "Quality", value: Math.min(100, Math.max(0, quality)) },
-            {
-              kpi: "Downtime",
-              value: Math.round(
-                scenarioConfig.downtimeMultiplier * 30 * randomInRange(0.8, 1.5)
-              ),
-            },
+            { kpi: "Downtime", value: Math.round(scenarioConfig.downtimeMultiplier * 30 * randomInRange(0.8, 1.5)) },
           ];
 
           for (const kv of kpiValues) {
             const kpiDef = this.kpis.find((k) => k["KPI"] === kv.kpi);
-            const threshold = this.alertThresholds.find(
-              (t) => t["KPI"] === kv.kpi
-            );
+            const threshold = this.alertThresholds.find((t) => t["KPI"] === kv.kpi);
 
             let status = "Normal";
             let level = "";
@@ -322,55 +256,28 @@ class ManufacturingSimulator {
             if (threshold) {
               const warning = Number(threshold["Warning"]);
               const critical = Number(threshold["Critical"]);
-
               if (kv.kpi === "Downtime") {
-                if (kv.value >= critical) {
-                  status = "Critical";
-                  level = "Critical";
-                } else if (kv.value >= warning) {
-                  status = "Warning";
-                  level = "Warning";
-                }
+                if (kv.value >= critical) { status = "Critical"; level = "Critical"; }
+                else if (kv.value >= warning) { status = "Warning"; level = "Warning"; }
               } else {
-                if (kv.value <= critical) {
-                  status = "Critical";
-                  level = "Critical";
-                } else if (kv.value <= warning) {
-                  status = "Warning";
-                  level = "Warning";
-                }
+                if (kv.value <= critical) { status = "Critical"; level = "Critical"; }
+                else if (kv.value <= warning) { status = "Warning"; level = "Warning"; }
               }
             }
 
-            const kpiSnapshot: KPISnapshot = {
-              "Snapshot ID": generateId("KPI"),
-              "Plant ID": this.config.plantId,
-              Date: currentDate,
-              Shift: shift,
-              KPI: kv.kpi,
-              Value: kv.value,
-              Target: Number(kpiDef?.["Target"] || 0),
-              Status: status,
-            };
-
-            await this.appendRow("KPI_Snapshot", Object.values(kpiSnapshot));
+            this.batchData["KPI_Snapshot"].push([
+              generateId("KPI"), this.config.plantId, currentDate, shift,
+              kv.kpi, kv.value, Number(kpiDef?.["Target"] || 0), status,
+            ]);
             this.recordsGenerated++;
 
-            // Alert Log (if threshold breached)
             if (level) {
-              const alert: AlertLog = {
-                "Alert ID": generateId("ALERT"),
-                "Plant ID": this.config.plantId,
-                Date: currentDate,
-                KPI: kv.kpi,
-                Value: kv.value,
-                Threshold: Number(threshold?.["Warning"] || 0),
-                Level: level,
-                Message: `${kv.kpi} is at ${kv.value}${kpiDef?.["Unit"] || ""} - ${level} threshold breached`,
-                Status: "Open",
-              };
-
-              await this.appendRow("Alert_Log", Object.values(alert));
+              this.batchData["Alert_Log"].push([
+                generateId("ALERT"), this.config.plantId, currentDate, kv.kpi,
+                kv.value, Number(threshold?.["Warning"] || 0), level,
+                `${kv.kpi} is at ${kv.value}${kpiDef?.["Unit"] || ""} - ${level} threshold breached`,
+                "Open",
+              ]);
               this.recordsGenerated++;
             }
           }
@@ -379,34 +286,21 @@ class ManufacturingSimulator {
           if (Math.random() < scenarioConfig.problemChance) {
             const problemDef = pickRandom(this.problems);
             if (problemDef) {
-              const problem: ProductionProblem = {
-                "Problem ID": generateId("PROB"),
-                "Run ID": runId,
-                "Machine ID": String(problemDef["Associated Machine"] || ""),
-                "Line ID": String(line["Line ID"]),
-                Date: currentDate,
-                Shift: shift,
-                Problem: String(problemDef["Problem"] || "Unknown"),
-                Category: "Equipment",
-                Severity: pickRandom(["Critical", "High", "Medium", "Low"]),
-                Description: String(problemDef["Description"] || ""),
-                Status: "Open",
-              };
-
-              await this.appendRow("Production_Problem", Object.values(problem));
+              const probId = generateId("PROB");
+              this.batchData["Production_Problem"].push([
+                probId, runId, String(problemDef["Associated Machine"] || ""),
+                String(line["Line ID"]), currentDate, shift,
+                String(problemDef["Problem"] || "Unknown"), "Equipment",
+                pickRandom(["Critical", "High", "Medium", "Low"]),
+                String(problemDef["Description"] || ""), "Open",
+              ]);
               this.recordsGenerated++;
 
-              // Corrective Action
-              const action: CorrectiveAction = {
-                "Action ID": generateId("ACT"),
-                "Problem ID": problem["Problem ID"],
-                Date: currentDate,
-                Action: `Investigate and resolve ${problem.Problem}`,
-                "Assigned To": "Engineer",
-                Status: "Pending",
-              };
-
-              await this.appendRow("Corrective_Action", Object.values(action));
+              this.batchData["Corrective_Action"].push([
+                generateId("ACT"), probId, currentDate,
+                `Investigate and resolve ${problemDef["Problem"] || "Unknown"}`,
+                "Engineer", "Pending",
+              ]);
               this.recordsGenerated++;
             }
           }
@@ -415,19 +309,26 @@ class ManufacturingSimulator {
     }
 
     // Simulation Run record
-    const simulationRun: SimulationRun = {
-      "Simulation ID": this.simulationId,
-      "Plant ID": this.config.plantId,
-      "Start Date": this.config.startDate,
-      "End Date": endDate,
-      Scenario: this.config.scenario,
-      "Randomness (%)": this.config.randomness,
-      "Records Generated": this.recordsGenerated,
-      "Generated At": new Date().toISOString(),
-    };
-
-    await this.appendRow("Simulation_Run", Object.values(simulationRun));
+    this.batchData["Simulation_Run"].push([
+      this.simulationId, this.config.plantId, this.config.startDate, endDate,
+      this.config.scenario, this.config.randomness, this.recordsGenerated,
+      new Date().toISOString(),
+    ]);
     this.recordsGenerated++;
+
+    // BATCH WRITE: Send all data to Apps Script in parallel
+    const writePromises = Object.entries(this.batchData)
+      .filter(([_, rows]) => rows.length > 0)
+      .map(([sheetName, rows]) => {
+        this.sheetsCreated.push(sheetName);
+        return sheetsRepository.batchAppend(
+          sheetName,
+          TRANSACTION_HEADERS[sheetName] || [],
+          rows
+        );
+      });
+
+    await Promise.all(writePromises);
 
     return {
       simulationId: this.simulationId,
@@ -439,17 +340,6 @@ class ManufacturingSimulator {
       recordsGenerated: this.recordsGenerated,
       sheetsCreated: this.sheetsCreated,
     };
-  }
-
-  private async appendRow(
-    sheetName: string,
-    values: (string | number)[]
-  ): Promise<void> {
-    const headers = TRANSACTION_HEADERS[sheetName];
-    await sheetsRepository.appendRowWithHeaders(sheetName, headers || [], values);
-    if (!this.sheetsCreated.includes(sheetName)) {
-      this.sheetsCreated.push(sheetName);
-    }
   }
 }
 
@@ -468,7 +358,6 @@ export async function POST(request: NextRequest) {
 
     const config: SimulatorConfig = await request.json();
 
-    // Validation
     if (!config.plantId || !config.startDate || !config.numberOfDays || !config.scenario) {
       return NextResponse.json(
         { success: false, error: "Missing required fields" },
@@ -494,10 +383,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Simulator error:", error);
     return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Simulation failed",
-      },
+      { success: false, error: error instanceof Error ? error.message : "Simulation failed" },
       { status: 500 }
     );
   }
